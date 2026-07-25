@@ -1,0 +1,403 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="JobShot" />
+<meta name="theme-color" content="#0b1220" />
+<title>Paragon JobShot</title>
+<link rel="manifest" href="manifest.webmanifest" />
+<link rel="apple-touch-icon" href="icon-192.png" />
+<style>
+  :root{
+    --bg:#0b1220; --panel:#141d2e; --line:#243049;
+    --txt:#e8edf6; --muted:#9aa7bd; --accent:#f2a900; --accent2:#2b6cff;
+    --ok:#28c76f; --err:#ff5c5c;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--txt);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;overscroll-behavior:none}
+  button{font:inherit;color:inherit;cursor:pointer}
+  .app{display:flex;flex-direction:column;height:100dvh}
+  header{display:flex;align-items:center;gap:10px;padding:10px 14px;
+    padding-top:calc(10px + env(safe-area-inset-top));background:#0d1526;border-bottom:1px solid var(--line)}
+  header .brand{font-weight:700;letter-spacing:.3px}
+  header .brand b{color:var(--accent)}
+  header .spacer{flex:1}
+  .iconbtn{background:#1b2740;border:1px solid var(--line);border-radius:10px;padding:8px 10px;font-size:14px}
+  .target{display:flex;gap:8px;align-items:center;padding:8px 14px;background:#101a2e;border-bottom:1px solid var(--line);font-size:13px}
+  .target .pill{background:#1b2740;border:1px solid var(--line);border-radius:999px;padding:5px 10px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:60vw}
+  .target .pill b{color:var(--txt)}
+  .target .change{margin-left:auto;color:var(--accent);font-weight:600;background:none;border:0}
+  .stage{position:relative;flex:1;background:#000;overflow:hidden;display:flex;align-items:center;justify-content:center}
+  video,canvas.preview{width:100%;height:100%;object-fit:cover;display:block}
+  .hud{position:absolute;left:0;right:0;bottom:0;padding:10px 14px;
+    background:linear-gradient(transparent,rgba(0,0,0,.55));pointer-events:none;font-size:12px;color:#dfe7f5}
+  .hud .row{display:flex;gap:12px;flex-wrap:wrap}
+  .controls{display:flex;align-items:center;justify-content:center;gap:26px;
+    padding:16px 14px calc(16px + env(safe-area-inset-bottom));background:#0d1526;border-top:1px solid var(--line)}
+  .shutter{width:74px;height:74px;border-radius:50%;background:#fff;border:5px solid #c9d3e6;
+    box-shadow:0 0 0 4px #0d1526,0 0 0 6px #33507f}
+  .shutter:active{transform:scale(.94)}
+  .mini{width:52px;height:52px;border-radius:50%;background:#1b2740;border:1px solid var(--line);
+    display:flex;align-items:center;justify-content:center;font-size:20px}
+  .sheet{position:fixed;inset:0;background:rgba(4,8,16,.72);display:none;align-items:flex-end;z-index:40}
+  .sheet.open{display:flex}
+  .sheet .card{background:var(--panel);width:100%;max-height:88dvh;overflow:auto;border-top-left-radius:18px;
+    border-top-right-radius:18px;border:1px solid var(--line);padding:18px 16px calc(18px + env(safe-area-inset-bottom))}
+  .sheet h2{margin:2px 0 14px;font-size:18px}
+  label.f{display:block;margin:12px 0 6px;font-size:13px;color:var(--muted)}
+  input[type=text]{width:100%;padding:12px;border-radius:10px;border:1px solid var(--line);
+    background:#0e1729;color:var(--txt);font-size:15px}
+  .btn{display:block;width:100%;text-align:center;padding:13px;border-radius:12px;border:0;font-weight:700;font-size:15px;margin-top:14px}
+  .btn.primary{background:var(--accent);color:#1a1300}
+  .btn.blue{background:var(--accent2);color:#fff}
+  .btn.ghost{background:#1b2740;border:1px solid var(--line);color:var(--txt)}
+  .hint{font-size:12px;color:var(--muted);margin-top:6px;line-height:1.45}
+  .crumbs{display:flex;flex-wrap:wrap;gap:4px;font-size:13px;margin-bottom:8px}
+  .crumbs span{color:var(--accent);cursor:pointer}
+  .crumbs i{color:var(--muted);font-style:normal}
+  .folderlist{border:1px solid var(--line);border-radius:12px;overflow:hidden}
+  .folderlist .item{display:flex;align-items:center;gap:10px;padding:13px 12px;border-bottom:1px solid var(--line);font-size:15px}
+  .folderlist .item:last-child{border-bottom:0}
+  .folderlist .item:active{background:#1b2740}
+  .folderlist .item .use{margin-left:auto;color:var(--accent);font-weight:700;font-size:13px}
+  .logo-prev{height:40px;margin-top:8px;background:#fff;border-radius:8px;padding:4px;display:none}
+  .toast{position:fixed;left:50%;top:14px;transform:translateX(-50%);background:#111c31;border:1px solid var(--line);
+    color:var(--txt);padding:10px 16px;border-radius:999px;font-size:14px;z-index:60;display:none;box-shadow:0 8px 30px rgba(0,0,0,.4)}
+  .toast.show{display:block}
+  .toast.ok{border-color:var(--ok)} .toast.err{border-color:var(--err)}
+  .status{font-size:12px;color:var(--muted);text-align:center;padding:4px;min-height:20px}
+  .center{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:26px;color:var(--muted)}
+  .center .big{font-size:40px;margin-bottom:10px}
+  .gallery{position:absolute;left:12px;bottom:70px;display:flex;gap:6px}
+  .gallery img{width:44px;height:44px;object-fit:cover;border-radius:8px;border:2px solid #fff9}
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="brand">Paragon <b>JobShot</b></div>
+    <div class="spacer"></div>
+    <button class="iconbtn" id="btnSignin">Sign in</button>
+    <button class="iconbtn" id="btnSettings">&#9881;</button>
+  </header>
+
+  <div class="target">
+    <div class="pill" id="pillJob">Job#: <b>&mdash;</b></div>
+    <div class="pill" id="pillLoc">Loc: <b>&mdash;</b></div>
+    <button class="change" id="btnPickFolder">Change</button>
+  </div>
+
+  <div class="stage" id="stage">
+    <video id="video" playsinline autoplay muted></video>
+    <canvas class="preview" id="canvas" style="display:none"></canvas>
+    <div class="gallery" id="gallery"></div>
+    <div class="hud"><div class="row" id="hudRow"></div></div>
+    <div class="center" id="camMsg" style="display:none">
+      <div class="big">&#128247;</div>
+      <div id="camMsgTxt">Starting camera&hellip;</div>
+    </div>
+  </div>
+
+  <div class="status" id="statusLine"></div>
+
+  <div class="controls">
+    <button class="mini" id="btnFlip" title="Flip camera">&#128260;</button>
+    <button class="shutter" id="btnShutter" aria-label="Take photo"></button>
+    <button class="mini" id="btnFile" title="Pick from library">&#128444;</button>
+    <input type="file" id="fileInput" accept="image/*" capture="environment" style="display:none" />
+  </div>
+</div>
+
+<!-- Settings sheet -->
+<div class="sheet" id="sheetSettings">
+  <div class="card">
+    <h2>Settings</h2>
+    <label class="f">Google OAuth Client ID</label>
+    <input type="text" id="inClientId" placeholder="1234567890-abc.apps.googleusercontent.com" autocomplete="off" />
+    <div class="hint">Created once in Google Cloud Console &mdash; see the setup guide. Without it the app can't reach Google Drive.</div>
+
+    <label class="f">Location (stamped on every photo)</label>
+    <input type="text" id="inLocation" placeholder="PPC Edmonton Shop" />
+
+    <label class="f">Watermark logo (PNG with transparent background is best)</label>
+    <button class="btn ghost" id="btnLogo">Choose logo image&hellip;</button>
+    <input type="file" id="logoInput" accept="image/*" style="display:none" />
+    <img class="logo-prev" id="logoPrev" alt="logo preview" />
+
+    <button class="btn primary" id="btnSaveSettings">Save</button>
+    <button class="btn ghost" id="btnCloseSettings">Close</button>
+    <div class="hint" id="signedState"></div>
+  </div>
+</div>
+
+<!-- Folder picker sheet -->
+<div class="sheet" id="sheetFolder">
+  <div class="card">
+    <h2>Choose Drive folder</h2>
+    <div class="crumbs" id="crumbs"></div>
+    <div class="folderlist" id="folderList"></div>
+    <button class="btn blue" id="btnUseThis">Use this folder</button>
+    <button class="btn ghost" id="btnCloseFolder">Cancel</button>
+    <div class="hint">The folder name becomes the Job#. A job code like PPC-2026-056 is detected automatically.</div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<script>
+"use strict";
+/* ---------- config / state ---------- */
+var SCOPE = "https://www.googleapis.com/auth/drive";
+var LS = { clientId:"pjs_client_id", location:"pjs_location", logo:"pjs_logo",
+  folderId:"pjs_folder_id", folderName:"pjs_folder_name" };
+var DEFAULT_LOCATION = "PPC Edmonton Shop";
+
+var state = {
+  token:null, tokenClient:null,
+  clientId: localStorage.getItem(LS.clientId) || "",
+  location: localStorage.getItem(LS.location) || DEFAULT_LOCATION,
+  logo: localStorage.getItem(LS.logo) || "",
+  folderId: localStorage.getItem(LS.folderId) || "",
+  folderName: localStorage.getItem(LS.folderName) || "",
+  job:"", stream:null, facing:"environment",
+  nav:[{id:"root",name:"My Drive"}], chosen:null, afterAuth:null
+};
+var logoImg = null;
+
+/* ---------- helpers ---------- */
+function $(id){ return document.getElementById(id); }
+function toast(msg,kind){ var t=$("toast"); t.textContent=msg; t.className="toast show "+(kind||"");
+  clearTimeout(t._t); t._t=setTimeout(function(){t.className="toast";},2600); }
+function status(msg){ $("statusLine").textContent=msg||""; }
+function parseJob(name){
+  if(!name) return "";
+  var m=name.match(/[A-Z]{2,4}[-\s]?\d{4}[-\s]?\d{2,4}/i);
+  return m ? m[0].toUpperCase().replace(/\s/g,"-") : name;
+}
+function refreshTarget(){
+  state.job=parseJob(state.folderName);
+  $("pillJob").innerHTML="Job#: <b>"+(state.job||"&mdash;")+"</b>";
+  $("pillLoc").innerHTML="Loc: <b>"+(state.location||"&mdash;")+"</b>";
+  drawHud();
+}
+function pad(n){ return String(n).padStart(2,"0"); }
+function stamp(){
+  var d=new Date();
+  var date=d.getFullYear()+"-"+pad(d.getMonth()+1)+"-"+pad(d.getDate());
+  var time=pad(d.getHours())+":"+pad(d.getMinutes())+":"+pad(d.getSeconds());
+  return { date:date, time:time,
+    lines:[ "Job#: "+(state.job||"(no folder)"), "Location: "+(state.location||"—"), date+"  "+time ] };
+}
+function drawHud(){
+  var s=stamp();
+  $("hudRow").innerHTML=s.lines.map(function(l){return "<span>"+l+"</span>";}).join("");
+}
+setInterval(function(){ if($("canvas").style.display==="none") drawHud(); },1000);
+
+/* ---------- camera ---------- */
+function stopCamera(){ if(state.stream){ state.stream.getTracks().forEach(function(t){t.stop();}); state.stream=null; } }
+function startCamera(){
+  stopCamera(); $("camMsg").style.display="none";
+  navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ideal:state.facing}, width:{ideal:2560}, height:{ideal:1440} }, audio:false })
+  .then(function(stream){
+    state.stream=stream; var v=$("video"); v.srcObject=stream; v.style.display="block"; $("canvas").style.display="none";
+    v.play().catch(function(){});
+  }).catch(function(e){
+    $("camMsg").style.display="flex";
+    $("camMsgTxt").textContent="Camera unavailable — use the picture button to pick a photo. ("+e.name+")";
+  });
+}
+
+/* ---------- watermark ---------- */
+function roundRect(ctx,x,y,w,h,r){ ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);
+  ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath(); }
+function drawWatermark(src,w,h){
+  var c=$("canvas"); c.width=w; c.height=h; var ctx=c.getContext("2d");
+  ctx.drawImage(src,0,0,w,h);
+  var padpx=Math.round(w*0.025);
+  var fs=Math.max(18,Math.round(w*0.028));
+  var lh=Math.round(fs*1.35);
+  var s=stamp();
+  ctx.font="600 "+fs+"px -apple-system,Segoe UI,Roboto,sans-serif";
+  var maxTextW=0;
+  s.lines.forEach(function(l){ maxTextW=Math.max(maxTextW,ctx.measureText(l).width); });
+  var logoH=logoImg?Math.round(h*0.09):0;
+  var logoW=logoImg?Math.round(logoH*(logoImg.width/logoImg.height)):0;
+  var boxH=padpx + s.lines.length*lh + padpx*0.4;
+  var boxW=Math.min(w-padpx*2, Math.max(maxTextW,logoW)+padpx*2);
+  var bx=padpx, by=h-boxH-padpx;
+  ctx.fillStyle="rgba(8,14,26,0.55)"; roundRect(ctx,bx,by,boxW,boxH,Math.round(fs*0.5)); ctx.fill();
+  if(logoImg){ ctx.drawImage(logoImg, bx+boxW-logoW-padpx*0.6, by+padpx*0.5, logoW, logoH); }
+  ctx.fillStyle="#ffffff"; ctx.textBaseline="top"; ctx.shadowColor="rgba(0,0,0,.6)"; ctx.shadowBlur=3;
+  var ty=by+padpx*0.7;
+  s.lines.forEach(function(l,i){
+    ctx.font=(i===0?"700 ":"600 ")+(i===0?Math.round(fs*1.05):fs)+"px -apple-system,Segoe UI,Roboto,sans-serif";
+    ctx.fillText(l, bx+padpx*0.7, ty); ty+=lh;
+  });
+  ctx.shadowBlur=0; return c;
+}
+
+var lastBlob=null;
+function addThumb(dataUrl){ var g=$("gallery"); var im=new Image(); im.src=dataUrl; g.prepend(im);
+  while(g.children.length>3) g.removeChild(g.lastChild); }
+function toBlob(c){ return new Promise(function(res){ c.toBlob(res,"image/jpeg",0.92); }); }
+function loadImage(url){ return new Promise(function(res,rej){ var i=new Image(); i.onload=function(){res(i);}; i.onerror=rej; i.src=url; }); }
+
+function capture(){
+  var v=$("video");
+  if(!(state.stream && v.videoWidth)){ toast("Camera not ready","err"); return; }
+  var c=drawWatermark(v,v.videoWidth,v.videoHeight);
+  v.style.display="none"; c.style.display="block";
+  toBlob(c).then(function(b){ lastBlob=b; addThumb(c.toDataURL("image/jpeg",0.6)); uploadOrSave(b); });
+  setTimeout(function(){ if(state.stream){ $("video").style.display="block"; $("canvas").style.display="none"; } },900);
+}
+function captureFromFile(file){
+  loadImage(URL.createObjectURL(file)).then(function(img){
+    var c=drawWatermark(img,img.naturalWidth,img.naturalHeight);
+    $("video").style.display="none"; c.style.display="block";
+    toBlob(c).then(function(b){ lastBlob=b; addThumb(c.toDataURL("image/jpeg",0.6)); uploadOrSave(b); });
+  });
+}
+
+/* ---------- Google auth + Drive ---------- */
+function ensureTokenClient(){
+  if(!state.clientId){ toast("Add your Client ID in Settings","err"); openSettings(); return false; }
+  if(!window.google || !google.accounts){ toast("Google library still loading — try again","err"); return false; }
+  if(!state.tokenClient){
+    state.tokenClient=google.accounts.oauth2.initTokenClient({
+      client_id:state.clientId, scope:SCOPE,
+      callback:function(resp){
+        if(resp.error){ toast("Sign-in failed: "+resp.error,"err"); return; }
+        state.token=resp.access_token;
+        $("btnSignin").textContent="Signed in";
+        $("signedState").textContent="Signed in to Google Drive.";
+        var f=state.afterAuth; state.afterAuth=null; if(f) f();
+        toast("Signed in","ok");
+      }
+    });
+  }
+  return true;
+}
+function requireAuth(then){
+  if(state.token){ if(then) then(); return; }
+  if(!ensureTokenClient()) return;
+  state.afterAuth=then||null;
+  state.tokenClient.requestAccessToken({prompt:"consent"});
+}
+function driveList(parentId){
+  var q=encodeURIComponent("'"+parentId+"' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false");
+  var url="https://www.googleapis.com/drive/v3/files?q="+q+"&fields=files(id,name)&orderBy=name&pageSize=200";
+  return fetch(url,{headers:{Authorization:"Bearer "+state.token}}).then(function(r){
+    if(r.status===401){ state.token=null; throw new Error("auth"); }
+    return r.json();
+  }).then(function(j){ return j.files||[]; });
+}
+function uploadOrSave(blob){
+  if(!state.folderId){ toast("Pick a Drive folder first","err"); openFolder(); return; }
+  requireAuth(function(){
+    status("Uploading to "+state.folderName+"…");
+    var s=stamp();
+    var name=(state.job||"photo")+"_"+s.date+"_"+s.time.replace(/:/g,"-")+".jpg";
+    var meta={ name:name, parents:[state.folderId] };
+    var form=new FormData();
+    form.append("metadata", new Blob([JSON.stringify(meta)],{type:"application/json"}));
+    form.append("file", blob);
+    fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name",
+      { method:"POST", headers:{Authorization:"Bearer "+state.token}, body:form })
+    .then(function(r){
+      if(r.status===401){ state.token=null; uploadOrSave(blob); return null; }
+      if(!r.ok){ throw new Error("HTTP "+r.status); }
+      return r.json();
+    }).then(function(j){ if(j){ status(""); toast("Saved: "+j.name,"ok"); } })
+    .catch(function(e){ status(""); toast("Upload failed: "+e.message,"err"); });
+  });
+}
+
+/* ---------- folder picker UI ---------- */
+function openFolder(){
+  requireAuth(function(){ state.nav=[{id:"root",name:"My Drive"}]; state.chosen=null; renderFolder(); $("sheetFolder").classList.add("open"); });
+}
+function renderFolder(){
+  var cur=state.nav[state.nav.length-1];
+  $("crumbs").innerHTML=state.nav.map(function(n,i){
+    return "<span data-i='"+i+"'>"+n.name+"</span>"+(i<state.nav.length-1?" <i>&rsaquo;</i> ":"");
+  }).join("");
+  $("folderList").innerHTML="<div class='item'>Loading…</div>";
+  driveList(cur.id).then(function(folders){
+    if(!folders.length){ $("folderList").innerHTML="<div class='item' style='color:var(--muted)'>No sub-folders here. Tap “Use this folder”.</div>"; return; }
+    $("folderList").innerHTML=folders.map(function(f){
+      var safe=f.name.replace(/"/g,"&quot;");
+      return "<div class='item' data-id='"+f.id+"' data-name=\""+safe+"\">&#128193; <span>"+f.name+"</span><span class='use'>open &rsaquo;</span></div>";
+    }).join("");
+  }).catch(function(e){
+    if(e.message==="auth"){ toast("Session expired — sign in again","err"); requireAuth(renderFolder); return; }
+    $("folderList").innerHTML="<div class='item' style='color:var(--err)'>Error: "+e.message+"</div>";
+  });
+}
+$("folderList").addEventListener("click",function(e){
+  var item=e.target.closest(".item"); if(!item||!item.dataset.id) return;
+  state.nav.push({id:item.dataset.id,name:item.dataset.name});
+  state.chosen={id:item.dataset.id,name:item.dataset.name}; renderFolder();
+});
+$("crumbs").addEventListener("click",function(e){
+  var s=e.target.closest("span"); if(!s) return;
+  var i=+s.dataset.i; state.nav=state.nav.slice(0,i+1);
+  state.chosen=i>0?state.nav[i]:null; renderFolder();
+});
+$("btnUseThis").onclick=function(){
+  var cur=state.chosen||state.nav[state.nav.length-1];
+  if(cur.id==="root"){ toast("Open a job folder first","err"); return; }
+  state.folderId=cur.id; state.folderName=cur.name;
+  localStorage.setItem(LS.folderId,cur.id); localStorage.setItem(LS.folderName,cur.name);
+  refreshTarget(); $("sheetFolder").classList.remove("open"); toast("Folder set: "+cur.name,"ok");
+};
+$("btnCloseFolder").onclick=function(){ $("sheetFolder").classList.remove("open"); };
+$("btnPickFolder").onclick=openFolder;
+
+/* ---------- settings UI ---------- */
+function openSettings(){
+  $("inClientId").value=state.clientId;
+  $("inLocation").value=state.location;
+  if(state.logo){ $("logoPrev").src=state.logo; $("logoPrev").style.display="block"; }
+  $("signedState").textContent=state.token?"Signed in to Google Drive.":"Not signed in yet.";
+  $("sheetSettings").classList.add("open");
+}
+$("btnSettings").onclick=openSettings;
+$("btnCloseSettings").onclick=function(){ $("sheetSettings").classList.remove("open"); };
+$("btnLogo").onclick=function(){ $("logoInput").click(); };
+$("logoInput").onchange=function(e){
+  var f=e.target.files[0]; if(!f) return;
+  var rd=new FileReader();
+  rd.onload=function(){ state.logo=rd.result; $("logoPrev").src=rd.result; $("logoPrev").style.display="block"; };
+  rd.readAsDataURL(f);
+};
+$("btnSaveSettings").onclick=function(){
+  state.clientId=$("inClientId").value.trim();
+  state.location=$("inLocation").value.trim()||DEFAULT_LOCATION;
+  localStorage.setItem(LS.clientId,state.clientId);
+  localStorage.setItem(LS.location,state.location);
+  if(state.logo) localStorage.setItem(LS.logo,state.logo);
+  state.tokenClient=null; loadLogo(); refreshTarget();
+  $("sheetSettings").classList.remove("open"); toast("Settings saved","ok");
+};
+function loadLogo(){ if(state.logo){ var i=new Image(); i.onload=function(){ logoImg=i; }; i.src=state.logo; } else logoImg=null; }
+
+/* ---------- wire up ---------- */
+$("btnSignin").onclick=function(){ requireAuth(function(){}); };
+$("btnShutter").onclick=capture;
+$("btnFlip").onclick=function(){ state.facing=state.facing==="environment"?"user":"environment"; startCamera(); };
+$("btnFile").onclick=function(){ $("fileInput").click(); };
+$("fileInput").onchange=function(e){ var f=e.target.files[0]; if(f) captureFromFile(f); e.target.value=""; };
+
+/* ---------- init ---------- */
+loadLogo(); refreshTarget(); startCamera();
+if(!state.clientId){ setTimeout(function(){ toast("First run: open Settings (gear) to add your Client ID & logo",""); },800); }
+</script>
+</body>
+</html>
