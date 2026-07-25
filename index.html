@@ -157,10 +157,11 @@ var SCOPE = "https://www.googleapis.com/auth/drive";
 var LS = { clientId:"pjs_client_id", location:"pjs_location", logo:"pjs_logo",
   folderId:"pjs_folder_id", folderName:"pjs_folder_name" };
 var DEFAULT_LOCATION = "PPC Edmonton Shop";
+var DEFAULT_CLIENT_ID = "554927118785-cu08jfujbaanb6dprjsq5uqfhm59nveg.apps.googleusercontent.com";
 
 var state = {
   token:null, tokenClient:null,
-  clientId: localStorage.getItem(LS.clientId) || "",
+  clientId: localStorage.getItem(LS.clientId) || DEFAULT_CLIENT_ID,
   location: localStorage.getItem(LS.location) || DEFAULT_LOCATION,
   logo: localStorage.getItem(LS.logo) || "",
   folderId: localStorage.getItem(LS.folderId) || "",
