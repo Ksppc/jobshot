@@ -108,7 +108,7 @@
   <div class="controls">
     <button class="mini" id="btnFlip" title="Flip camera">&#128260;</button>
     <button class="shutter" id="btnShutter" aria-label="Take photo"></button>
-    <button class="mini" id="btnFile" title="Pick from library">&#128444;</button>
+    <button class="mini" id="btnFile" title="Full-res photo from camera">&#128444;</button>
     <input type="file" id="fileInput" accept="image/*" capture="environment" style="display:none" />
   </div>
 </div>
@@ -119,7 +119,7 @@
     <h2>Settings</h2>
     <label class="f">Google OAuth Client ID</label>
     <input type="text" id="inClientId" placeholder="1234567890-abc.apps.googleusercontent.com" autocomplete="off" />
-    <div class="hint">Created once in Google Cloud Console &mdash; see the setup guide. Without it the app can't reach Google Drive.</div>
+    <div class="hint">Already set for Paragon. Only change this if you rebuild the Google project.</div>
 
     <label class="f">Location (stamped on every photo)</label>
     <input type="text" id="inLocation" placeholder="PPC Edmonton Shop" />
@@ -158,6 +158,7 @@ var LS = { clientId:"pjs_client_id", location:"pjs_location", logo:"pjs_logo",
   folderId:"pjs_folder_id", folderName:"pjs_folder_name" };
 var DEFAULT_LOCATION = "PPC Edmonton Shop";
 var DEFAULT_CLIENT_ID = "554927118785-cu08jfujbaanb6dprjsq5uqfhm59nveg.apps.googleusercontent.com";
+var JPEG_QUALITY = 0.95;
 
 var state = {
   token:null, tokenClient:null,
@@ -205,7 +206,7 @@ setInterval(function(){ if($("canvas").style.display==="none") drawHud(); },1000
 function stopCamera(){ if(state.stream){ state.stream.getTracks().forEach(function(t){t.stop();}); state.stream=null; } }
 function startCamera(){
   stopCamera(); $("camMsg").style.display="none";
-  navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ideal:state.facing}, width:{ideal:2560}, height:{ideal:1440} }, audio:false })
+  navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ideal:state.facing}, width:{ideal:4096}, height:{ideal:2160} }, audio:false })
   .then(function(stream){
     state.stream=stream; var v=$("video"); v.srcObject=stream; v.style.display="block"; $("canvas").style.display="none";
     v.play().catch(function(){});
@@ -215,54 +216,83 @@ function startCamera(){
   });
 }
 
-/* ---------- watermark ---------- */
-function roundRect(ctx,x,y,w,h,r){ ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);
-  ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath(); }
+/* ---------- watermark (text drawn directly on the photo, no panel) ---------- */
 function drawWatermark(src,w,h){
   var c=$("canvas"); c.width=w; c.height=h; var ctx=c.getContext("2d");
   ctx.drawImage(src,0,0,w,h);
-  var padpx=Math.round(w*0.025);
-  var fs=Math.max(18,Math.round(w*0.028));
-  var lh=Math.round(fs*1.35);
+
+  var padpx=Math.round(w*0.03);
+  var fs=Math.max(20,Math.round(w*0.030));
+  var lh=Math.round(fs*1.34);
   var s=stamp();
-  ctx.font="600 "+fs+"px -apple-system,Segoe UI,Roboto,sans-serif";
-  var maxTextW=0;
-  s.lines.forEach(function(l){ maxTextW=Math.max(maxTextW,ctx.measureText(l).width); });
-  var logoH=logoImg?Math.round(h*0.09):0;
-  var logoW=logoImg?Math.round(logoH*(logoImg.width/logoImg.height)):0;
-  var boxH=padpx + s.lines.length*lh + padpx*0.4;
-  var boxW=Math.min(w-padpx*2, Math.max(maxTextW,logoW)+padpx*2);
-  var bx=padpx, by=h-boxH-padpx;
-  ctx.fillStyle="rgba(8,14,26,0.55)"; roundRect(ctx,bx,by,boxW,boxH,Math.round(fs*0.5)); ctx.fill();
-  if(logoImg){ ctx.drawImage(logoImg, bx+boxW-logoW-padpx*0.6, by+padpx*0.5, logoW, logoH); }
-  ctx.fillStyle="#ffffff"; ctx.textBaseline="top"; ctx.shadowColor="rgba(0,0,0,.6)"; ctx.shadowBlur=3;
-  var ty=by+padpx*0.7;
-  s.lines.forEach(function(l,i){
-    ctx.font=(i===0?"700 ":"600 ")+(i===0?Math.round(fs*1.05):fs)+"px -apple-system,Segoe UI,Roboto,sans-serif";
-    ctx.fillText(l, bx+padpx*0.7, ty); ty+=lh;
-  });
-  ctx.shadowBlur=0; return c;
+
+  ctx.textBaseline="alphabetic";
+  ctx.textAlign="left";
+  ctx.lineJoin="round";
+  ctx.miterLimit=2;
+
+  // bottom-left, stacked from the bottom up: Job# (top, bold) → Location → date/time (bottom)
+  var baseY=h-padpx;
+  for(var i=s.lines.length-1;i>=0;i--){
+    var big=(i===0);
+    var f=big?Math.round(fs*1.1):fs;
+    ctx.font=(big?"800 ":"700 ")+f+"px -apple-system,Segoe UI,Roboto,Arial,sans-serif";
+    var y=baseY-(s.lines.length-1-i)*lh;
+    // soft shadow for separation on busy backgrounds
+    ctx.shadowColor="rgba(0,0,0,0.55)"; ctx.shadowBlur=Math.round(f*0.5);
+    ctx.shadowOffsetX=0; ctx.shadowOffsetY=Math.round(f*0.06);
+    // dark outline
+    ctx.lineWidth=Math.max(2,Math.round(f*0.17));
+    ctx.strokeStyle="rgba(0,0,0,0.9)";
+    ctx.strokeText(s.lines[i], padpx, y);
+    // white fill
+    ctx.shadowBlur=0; ctx.shadowOffsetY=0;
+    ctx.fillStyle="#ffffff";
+    ctx.fillText(s.lines[i], padpx, y);
+  }
+
+  // logo, top-right, directly on the photo
+  if(logoImg){
+    var logoH=Math.round(h*0.085);
+    var logoW=Math.round(logoH*(logoImg.width/logoImg.height));
+    ctx.shadowColor="rgba(0,0,0,0.45)"; ctx.shadowBlur=Math.round(logoH*0.14); ctx.shadowOffsetY=Math.round(logoH*0.03);
+    ctx.drawImage(logoImg, w-logoW-padpx, padpx, logoW, logoH);
+    ctx.shadowBlur=0; ctx.shadowOffsetY=0;
+  }
+  return c;
 }
 
 var lastBlob=null;
 function addThumb(dataUrl){ var g=$("gallery"); var im=new Image(); im.src=dataUrl; g.prepend(im);
   while(g.children.length>3) g.removeChild(g.lastChild); }
-function toBlob(c){ return new Promise(function(res){ c.toBlob(res,"image/jpeg",0.92); }); }
+function toBlob(c){ return new Promise(function(res){ c.toBlob(res,"image/jpeg",JPEG_QUALITY); }); }
 function loadImage(url){ return new Promise(function(res,rej){ var i=new Image(); i.onload=function(){res(i);}; i.onerror=rej; i.src=url; }); }
 
+/* full-resolution still: ImageCapture.takePhoto() when supported, else fall back to the video frame */
 function capture(){
   var v=$("video");
   if(!(state.stream && v.videoWidth)){ toast("Camera not ready","err"); return; }
-  var c=drawWatermark(v,v.videoWidth,v.videoHeight);
-  v.style.display="none"; c.style.display="block";
-  toBlob(c).then(function(b){ lastBlob=b; addThumb(c.toDataURL("image/jpeg",0.6)); uploadOrSave(b); });
+  var track=state.stream.getVideoTracks()[0];
+  if(window.ImageCapture && track && track.readyState==="live"){
+    try{
+      var ic=new ImageCapture(track);
+      ic.takePhoto().then(function(blob){ return loadImage(URL.createObjectURL(blob)); })
+        .then(function(img){ finishCapture(img,img.naturalWidth,img.naturalHeight); })
+        .catch(function(){ finishCapture(v,v.videoWidth,v.videoHeight); });
+      return;
+    }catch(e){}
+  }
+  finishCapture(v,v.videoWidth,v.videoHeight);
+}
+function finishCapture(src,w,h){
+  var c=drawWatermark(src,w,h);
+  $("video").style.display="none"; c.style.display="block";
+  toBlob(c).then(function(b){ lastBlob=b; addThumb(c.toDataURL("image/jpeg",0.5)); uploadOrSave(b); });
   setTimeout(function(){ if(state.stream){ $("video").style.display="block"; $("canvas").style.display="none"; } },900);
 }
 function captureFromFile(file){
   loadImage(URL.createObjectURL(file)).then(function(img){
-    var c=drawWatermark(img,img.naturalWidth,img.naturalHeight);
-    $("video").style.display="none"; c.style.display="block";
-    toBlob(c).then(function(b){ lastBlob=b; addThumb(c.toDataURL("image/jpeg",0.6)); uploadOrSave(b); });
+    finishCapture(img,img.naturalWidth,img.naturalHeight);
   });
 }
 
@@ -379,7 +409,7 @@ $("logoInput").onchange=function(e){
   rd.readAsDataURL(f);
 };
 $("btnSaveSettings").onclick=function(){
-  state.clientId=$("inClientId").value.trim();
+  state.clientId=$("inClientId").value.trim()||DEFAULT_CLIENT_ID;
   state.location=$("inLocation").value.trim()||DEFAULT_LOCATION;
   localStorage.setItem(LS.clientId,state.clientId);
   localStorage.setItem(LS.location,state.location);
@@ -398,7 +428,6 @@ $("fileInput").onchange=function(e){ var f=e.target.files[0]; if(f) captureFromF
 
 /* ---------- init ---------- */
 loadLogo(); refreshTarget(); startCamera();
-if(!state.clientId){ setTimeout(function(){ toast("First run: open Settings (gear) to add your Client ID & logo",""); },800); }
 </script>
 </body>
 </html>
