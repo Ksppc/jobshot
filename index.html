@@ -37,6 +37,10 @@
   .hud{position:absolute;left:0;right:0;bottom:0;padding:10px 14px;
     background:linear-gradient(transparent,rgba(0,0,0,.55));pointer-events:none;font-size:12px;color:#dfe7f5}
   .hud .row{display:flex;gap:12px;flex-wrap:wrap}
+  .zoombar{position:absolute;left:10%;right:10%;bottom:54px;display:none;align-items:center;gap:8px;z-index:5}
+  .zoombar.on{display:flex}
+  .zoombar input[type=range]{flex:1;accent-color:var(--accent);height:26px}
+  .zoombar .zlbl{font-size:12px;font-weight:700;color:#fff;background:rgba(0,0,0,.5);border-radius:999px;padding:3px 9px;min-width:40px;text-align:center}
   .controls{display:flex;align-items:center;justify-content:center;gap:26px;
     padding:16px 14px calc(16px + env(safe-area-inset-bottom));background:#0d1526;border-top:1px solid var(--line)}
   .shutter{width:74px;height:74px;border-radius:50%;background:#fff;border:5px solid #c9d3e6;
@@ -97,6 +101,10 @@
     <canvas class="preview" id="canvas" style="display:none"></canvas>
     <div class="gallery" id="gallery"></div>
     <div class="hud"><div class="row" id="hudRow"></div></div>
+    <div class="zoombar" id="zoombar">
+      <span class="zlbl" id="zlbl">1.0&times;</span>
+      <input type="range" id="zoomSlider" min="1" max="5" step="0.1" value="1" aria-label="Zoom" />
+    </div>
     <div class="center" id="camMsg" style="display:none">
       <div class="big">&#128247;</div>
       <div id="camMsgTxt">Starting camera&hellip;</div>
@@ -122,7 +130,7 @@
     <div class="hint">Already set for Paragon. Only change this if you rebuild the Google project.</div>
 
     <label class="f">Location (stamped on every photo)</label>
-    <input type="text" id="inLocation" placeholder="PPC Edmonton Shop" />
+    <input type="text" id="inLocation" placeholder="PPC" />
 
     <label class="f">Watermark logo (PNG with transparent background is best)</label>
     <button class="btn ghost" id="btnLogo">Choose logo image&hellip;</button>
@@ -156,18 +164,20 @@
 var SCOPE = "https://www.googleapis.com/auth/drive";
 var LS = { clientId:"pjs_client_id", location:"pjs_location", logo:"pjs_logo",
   folderId:"pjs_folder_id", folderName:"pjs_folder_name" };
-var DEFAULT_LOCATION = "PPC Edmonton Shop";
+var DEFAULT_LOCATION = "PPC";
+var OLD_LOCATIONS = ["PPC Edmonton Shop"];  // auto-migrate any legacy default to PPC
 var DEFAULT_CLIENT_ID = "554927118785-cu08jfujbaanb6dprjsq5uqfhm59nveg.apps.googleusercontent.com";
-var JPEG_QUALITY = 0.95;
+var JPEG_QUALITY = 1.0;
 
 var state = {
   token:null, tokenClient:null,
   clientId: localStorage.getItem(LS.clientId) || DEFAULT_CLIENT_ID,
-  location: localStorage.getItem(LS.location) || DEFAULT_LOCATION,
+  location: (function(v){ return (!v || OLD_LOCATIONS.indexOf(v)>=0) ? DEFAULT_LOCATION : v; })(localStorage.getItem(LS.location)),
   logo: localStorage.getItem(LS.logo) || "",
   folderId: localStorage.getItem(LS.folderId) || "",
   folderName: localStorage.getItem(LS.folderName) || "",
   job:"", stream:null, facing:"environment",
+  zoom:1, zoomMode:"none", zoomTrack:null,
   nav:[{id:"root",name:"My Drive"}], chosen:null, afterAuth:null
 };
 var logoImg = null;
@@ -203,13 +213,55 @@ function drawHud(){
 setInterval(function(){ if($("canvas").style.display==="none") drawHud(); },1000);
 
 /* ---------- camera ---------- */
-function stopCamera(){ if(state.stream){ state.stream.getTracks().forEach(function(t){t.stop();}); state.stream=null; } }
+function stopCamera(){ if(state.stream){ state.stream.getTracks().forEach(function(t){t.stop();}); state.stream=null; } resetZoom(); }
+
+/* ---------- zoom (hardware where available, digital fallback for iOS Safari) ---------- */
+function resetZoom(){
+  state.zoom=1; state.zoomMode="none"; state.zoomTrack=null;
+  var v=$("video"); if(v){ v.style.transform=""; }
+  $("zoombar").classList.remove("on");
+  $("zoomSlider").value=1; $("zlbl").innerHTML="1.0&times;";
+}
+function setupZoom(stream){
+  var track=stream.getVideoTracks()[0]; if(!track) return;
+  state.zoomTrack=track;
+  var caps=(track.getCapabilities?track.getCapabilities():{})||{};
+  var sl=$("zoomSlider");
+  if(caps.zoom && typeof caps.zoom.max==="number" && caps.zoom.max>caps.zoom.min){
+    state.zoomMode="hw";
+    sl.min=caps.zoom.min; sl.max=caps.zoom.max;
+    sl.step=caps.zoom.step||((caps.zoom.max-caps.zoom.min)/100);
+    sl.value=caps.zoom.min; state.zoom=caps.zoom.min;
+  }else{
+    state.zoomMode="digital";
+    sl.min=1; sl.max=5; sl.step=0.1; sl.value=1; state.zoom=1;
+  }
+  $("zoombar").classList.add("on");
+  updateZoomLabel();
+}
+function updateZoomLabel(){
+  var base=(state.zoomMode==="hw")?(+$("zoomSlider").min||1):1;
+  var mult=base>0?(state.zoom/base):state.zoom;
+  $("zlbl").innerHTML=(mult).toFixed(1)+"&times;";
+}
+function applyZoom(val){
+  val=+val; state.zoom=val;
+  if(state.zoomMode==="hw" && state.zoomTrack){
+    try{ state.zoomTrack.applyConstraints({advanced:[{zoom:val}]}); }catch(e){}
+    $("video").style.transform="";
+  }else if(state.zoomMode==="digital"){
+    $("video").style.transformOrigin="center center";
+    $("video").style.transform="scale("+val+")";
+  }
+  updateZoomLabel();
+}
 function startCamera(){
   stopCamera(); $("camMsg").style.display="none";
-  navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ideal:state.facing}, width:{ideal:4096}, height:{ideal:2160} }, audio:false })
+  navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ideal:state.facing}, width:{ideal:8192}, height:{ideal:8192}, resizeMode:"none" }, audio:false })
   .then(function(stream){
     state.stream=stream; var v=$("video"); v.srcObject=stream; v.style.display="block"; $("canvas").style.display="none";
     v.play().catch(function(){});
+    setupZoom(stream);
   }).catch(function(e){
     $("camMsg").style.display="flex";
     $("camMsgTxt").textContent="Camera unavailable — use the picture button to pick a photo. ("+e.name+")";
@@ -285,6 +337,15 @@ function capture(){
   finishCapture(v,v.videoWidth,v.videoHeight);
 }
 function finishCapture(src,w,h){
+  // digital zoom: crop the centre by 1/zoom and rescale to full w×h so the saved
+  // photo matches the zoomed preview (hardware zoom is already baked into the frame)
+  if(state.zoomMode==="digital" && state.zoom>1){
+    var z=state.zoom, cw=Math.round(w/z), ch=Math.round(h/z);
+    var sx=Math.round((w-cw)/2), sy=Math.round((h-ch)/2);
+    var tmp=document.createElement("canvas"); tmp.width=w; tmp.height=h;
+    tmp.getContext("2d").drawImage(src, sx,sy,cw,ch, 0,0,w,h);
+    src=tmp;
+  }
   var c=drawWatermark(src,w,h);
   $("video").style.display="none"; c.style.display="block";
   toBlob(c).then(function(b){ lastBlob=b; addThumb(c.toDataURL("image/jpeg",0.5)); uploadOrSave(b); });
@@ -425,6 +486,28 @@ $("btnShutter").onclick=capture;
 $("btnFlip").onclick=function(){ state.facing=state.facing==="environment"?"user":"environment"; startCamera(); };
 $("btnFile").onclick=function(){ $("fileInput").click(); };
 $("fileInput").onchange=function(e){ var f=e.target.files[0]; if(f) captureFromFile(f); e.target.value=""; };
+
+/* zoom slider */
+$("zoomSlider").addEventListener("input",function(e){ applyZoom(e.target.value); });
+
+/* pinch-to-zoom on the camera stage */
+(function(){
+  var stage=$("stage"), startDist=0, startVal=1;
+  function dist(t){ var dx=t[0].clientX-t[1].clientX, dy=t[0].clientY-t[1].clientY; return Math.hypot(dx,dy); }
+  stage.addEventListener("touchstart",function(e){
+    if(e.touches.length===2 && state.zoomMode!=="none"){ startDist=dist(e.touches); startVal=state.zoom; }
+  },{passive:true});
+  stage.addEventListener("touchmove",function(e){
+    if(e.touches.length===2 && startDist>0){
+      e.preventDefault();
+      var sl=$("zoomSlider"), min=+sl.min, max=+sl.max;
+      var val=startVal*(dist(e.touches)/startDist);
+      val=Math.max(min,Math.min(max,val));
+      sl.value=val; applyZoom(val);
+    }
+  },{passive:false});
+  stage.addEventListener("touchend",function(e){ if(e.touches.length<2) startDist=0; },{passive:true});
+})();
 
 /* ---------- init ---------- */
 loadLogo(); refreshTarget(); startCamera();
