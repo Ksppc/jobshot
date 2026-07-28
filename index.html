@@ -164,7 +164,8 @@
 /* ---------- config / state ---------- */
 var SCOPE = "https://www.googleapis.com/auth/drive";
 var LS = { clientId:"pjs_client_id", location:"pjs_location", logo:"pjs_logo",
-  folderId:"pjs_folder_id", folderName:"pjs_folder_name", cfgVer:"pjs_cfg_version" };
+  folderId:"pjs_folder_id", folderName:"pjs_folder_name", cfgVer:"pjs_cfg_version",
+  token:"pjs_token", tokenExp:"pjs_token_exp" };
 var DEFAULT_LOCATION = "PPC";
 var OLD_LOCATIONS = ["PPC Edmonton Shop"];  // auto-migrate any legacy default to PPC
 var DEFAULT_CLIENT_ID = "554927118785-cu08jfujbaanb6dprjsq5uqfhm59nveg.apps.googleusercontent.com";
@@ -200,7 +201,8 @@ var state = {
   folderName: localStorage.getItem(LS.folderName) || "",
   job:"", stream:null, facing:"environment",
   zoom:1, zoomMode:"none", zoomTrack:null,
-  nav:[{id:ROOT_FOLDER_ID,name:ROOT_FOLDER_NAME}], chosen:null, afterAuth:null
+  nav:[{id:ROOT_FOLDER_ID,name:ROOT_FOLDER_NAME}], chosen:null, afterAuth:null,
+  interactiveTried:false
 };
 var logoImg = null;
 
@@ -379,7 +381,37 @@ function captureFromFile(file){
   });
 }
 
-/* ---------- Google auth + Drive ---------- */
+/* ---------- Google auth + Drive ----------
+   Sign in once, then stay signed in. Google hands out access tokens that expire
+   after about an hour and gives browser apps no refresh token, so "signed in for
+   good" means: cache the token until it expires, then renew it SILENTLY with
+   prompt:"" — which reuses the consent already on file and shows no screen. The
+   consent dialog only ever reappears if the grant is revoked in the Google
+   account, the device signs out of Google, or site data is cleared. */
+function markSignedIn(yes){
+  $("btnSignin").textContent = yes ? "Signed in" : "Sign in";
+  $("signedState").textContent = yes ? "Signed in to Google Drive." : "Not signed in yet.";
+}
+function saveToken(tok, expiresIn){
+  state.token = tok;
+  // renew 2 minutes early so a long upload never dies mid-flight on an expiring token
+  var exp = Date.now() + ((+expiresIn || 3600) * 1000) - 120000;
+  try{ localStorage.setItem(LS.token, tok); localStorage.setItem(LS.tokenExp, String(exp)); }catch(e){}
+  markSignedIn(true);
+}
+function loadToken(){
+  try{
+    var t = localStorage.getItem(LS.token), e = +(localStorage.getItem(LS.tokenExp) || 0);
+    if(t && Date.now() < e){ state.token = t; return true; }
+  }catch(e){}
+  clearToken();
+  return false;
+}
+function clearToken(){
+  state.token = null;
+  try{ localStorage.removeItem(LS.token); localStorage.removeItem(LS.tokenExp); }catch(e){}
+  markSignedIn(false);
+}
 function ensureTokenClient(){
   if(!state.clientId){ toast("Add your Client ID in Settings","err"); openSettings(); return false; }
   if(!window.google || !google.accounts){ toast("Google library still loading — try again","err"); return false; }
@@ -387,12 +419,25 @@ function ensureTokenClient(){
     state.tokenClient=google.accounts.oauth2.initTokenClient({
       client_id:state.clientId, scope:SCOPE,
       callback:function(resp){
-        if(resp.error){ toast("Sign-in failed: "+resp.error,"err"); return; }
-        state.token=resp.access_token;
-        $("btnSignin").textContent="Signed in";
-        $("signedState").textContent="Signed in to Google Drive.";
+        if(resp.error){
+          // a silent renewal that needs the user is not a failure — ask once, visibly
+          if(!state.interactiveTried){
+            state.interactiveTried = true;
+            state.tokenClient.requestAccessToken({prompt:"consent"});
+            return;
+          }
+          toast("Sign-in failed: "+resp.error,"err"); return;
+        }
+        state.interactiveTried = false;
+        saveToken(resp.access_token, resp.expires_in);
         var f=state.afterAuth; state.afterAuth=null; if(f) f();
         toast("Signed in","ok");
+      },
+      error_callback:function(){
+        if(!state.interactiveTried){
+          state.interactiveTried = true;
+          state.tokenClient.requestAccessToken({prompt:"consent"});
+        }
       }
     });
   }
@@ -400,15 +445,17 @@ function ensureTokenClient(){
 }
 function requireAuth(then){
   if(state.token){ if(then) then(); return; }
+  if(loadToken()){ if(then) then(); return; }          // cached and still valid
   if(!ensureTokenClient()) return;
   state.afterAuth=then||null;
-  state.tokenClient.requestAccessToken({prompt:"consent"});
+  state.interactiveTried = false;
+  state.tokenClient.requestAccessToken({prompt:""});   // silent when consent already granted
 }
 function driveList(parentId){
   var q=encodeURIComponent("'"+parentId+"' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false");
   var url="https://www.googleapis.com/drive/v3/files?q="+q+"&fields=files(id,name)&orderBy=name&pageSize=200";
   return fetch(url,{headers:{Authorization:"Bearer "+state.token}}).then(function(r){
-    if(r.status===401){ state.token=null; throw new Error("auth"); }
+    if(r.status===401){ clearToken(); throw new Error("auth"); }
     if(r.status===404){ throw new Error("The production photo folder could not be found. Check that this account has access to it."); }
     return r.json();
   }).then(function(j){ return j.files||[]; });
@@ -426,7 +473,7 @@ function uploadOrSave(blob){
     fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name",
       { method:"POST", headers:{Authorization:"Bearer "+state.token}, body:form })
     .then(function(r){
-      if(r.status===401){ state.token=null; uploadOrSave(blob); return null; }
+      if(r.status===401){ clearToken(); uploadOrSave(blob); return null; }
       if(!r.ok){ throw new Error("HTTP "+r.status); }
       return r.json();
     }).then(function(j){ if(j){ status(""); toast("Saved: "+j.name,"ok"); } })
@@ -508,7 +555,10 @@ $("logoInput").onchange=function(e){
   rd.readAsDataURL(f);
 };
 $("btnSaveSettings").onclick=function(){
-  state.clientId=$("inClientId").value.trim()||DEFAULT_CLIENT_ID;
+  var newClientId=$("inClientId").value.trim()||DEFAULT_CLIENT_ID;
+  // a different Google project invalidates the cached token — drop it, don't strand the app on a dead one
+  if(newClientId!==state.clientId) clearToken();
+  state.clientId=newClientId;
   state.location=$("inLocation").value.trim()||DEFAULT_LOCATION;
   localStorage.setItem(LS.clientId,state.clientId);
   localStorage.setItem(LS.location,state.location);
@@ -550,6 +600,8 @@ $("zoomSlider").addEventListener("input",function(e){ applyZoom(e.target.value);
 /* ---------- init ---------- */
 $("rootLabel").textContent = ROOT_FOLDER_NAME;
 loadLogo(); refreshTarget(); startCamera();
+// restore a still-valid session so the crew opens the app already signed in
+if(loadToken()) markSignedIn(true);
 </script>
 </body>
 </html>
