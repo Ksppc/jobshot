@@ -60,6 +60,7 @@
   .btn.primary{background:var(--accent);color:#1a1300}
   .btn.blue{background:var(--accent2);color:#fff}
   .btn.ghost{background:#1b2740;border:1px solid var(--line);color:var(--txt)}
+  .btn[disabled]{opacity:.45;cursor:default}
   .hint{font-size:12px;color:var(--muted);margin-top:6px;line-height:1.45}
   .crumbs{display:flex;flex-wrap:wrap;gap:4px;font-size:13px;margin-bottom:8px}
   .crumbs span{color:var(--accent);cursor:pointer}
@@ -146,12 +147,12 @@
 <!-- Folder picker sheet -->
 <div class="sheet" id="sheetFolder">
   <div class="card">
-    <h2>Choose Drive folder</h2>
+    <h2>Choose job folder</h2>
     <div class="crumbs" id="crumbs"></div>
     <div class="folderlist" id="folderList"></div>
     <button class="btn blue" id="btnUseThis">Use this folder</button>
     <button class="btn ghost" id="btnCloseFolder">Cancel</button>
-    <div class="hint">The folder name becomes the Job#. A job code like PPC-2026-056 is detected automatically.</div>
+    <div class="hint">Only job folders inside <b id="rootLabel"></b> can be picked. The folder name becomes the Job#. A job code like PPC-2026-056 is detected automatically.</div>
   </div>
 </div>
 
@@ -163,11 +164,32 @@
 /* ---------- config / state ---------- */
 var SCOPE = "https://www.googleapis.com/auth/drive";
 var LS = { clientId:"pjs_client_id", location:"pjs_location", logo:"pjs_logo",
-  folderId:"pjs_folder_id", folderName:"pjs_folder_name" };
+  folderId:"pjs_folder_id", folderName:"pjs_folder_name", cfgVer:"pjs_cfg_version" };
 var DEFAULT_LOCATION = "PPC";
 var OLD_LOCATIONS = ["PPC Edmonton Shop"];  // auto-migrate any legacy default to PPC
 var DEFAULT_CLIENT_ID = "554927118785-cu08jfujbaanb6dprjsq5uqfhm59nveg.apps.googleusercontent.com";
 var JPEG_QUALITY = 1.0;
+
+/* ---------- production photo root ----------
+   The picker is pinned to this folder. The crew can only choose job folders
+   INSIDE it — never My Drive, never anything alongside it. To move the app to a
+   different parent folder, change these two lines and bump CONFIG_VERSION so
+   every device is forced to re-pick. */
+var ROOT_FOLDER_ID   = "1FPI2k3OlTUY90dfz1Ke9qiJ3BkTXDiFu";
+var ROOT_FOLDER_NAME = "PPC Shop Production Photo's";
+var CONFIG_VERSION   = 2;
+
+/* Devices that picked a folder under the old "browse all of My Drive" build still
+   have it saved. Those saved folders live outside the root, so clear them once and
+   make the device pick again from the pinned list. */
+(function migrateSavedFolder(){
+  var seen = +(localStorage.getItem(LS.cfgVer) || 0);
+  if(seen < CONFIG_VERSION){
+    localStorage.removeItem(LS.folderId);
+    localStorage.removeItem(LS.folderName);
+    localStorage.setItem(LS.cfgVer, String(CONFIG_VERSION));
+  }
+})();
 
 var state = {
   token:null, tokenClient:null,
@@ -178,7 +200,7 @@ var state = {
   folderName: localStorage.getItem(LS.folderName) || "",
   job:"", stream:null, facing:"environment",
   zoom:1, zoomMode:"none", zoomTrack:null,
-  nav:[{id:"root",name:"My Drive"}], chosen:null, afterAuth:null
+  nav:[{id:ROOT_FOLDER_ID,name:ROOT_FOLDER_NAME}], chosen:null, afterAuth:null
 };
 var logoImg = null;
 
@@ -387,11 +409,12 @@ function driveList(parentId){
   var url="https://www.googleapis.com/drive/v3/files?q="+q+"&fields=files(id,name)&orderBy=name&pageSize=200";
   return fetch(url,{headers:{Authorization:"Bearer "+state.token}}).then(function(r){
     if(r.status===401){ state.token=null; throw new Error("auth"); }
+    if(r.status===404){ throw new Error("The production photo folder could not be found. Check that this account has access to it."); }
     return r.json();
   }).then(function(j){ return j.files||[]; });
 }
 function uploadOrSave(blob){
-  if(!state.folderId){ toast("Pick a Drive folder first","err"); openFolder(); return; }
+  if(!state.folderId){ toast("Pick a job folder first","err"); openFolder(); return; }
   requireAuth(function(){
     status("Uploading to "+state.folderName+"…");
     var s=stamp();
@@ -411,18 +434,32 @@ function uploadOrSave(blob){
   });
 }
 
-/* ---------- folder picker UI ---------- */
+/* ---------- folder picker UI ----------
+   nav[0] is always the pinned production root, so the crew can never browse above
+   it — there is no breadcrumb back to My Drive because My Drive is never entered. */
 function openFolder(){
-  requireAuth(function(){ state.nav=[{id:"root",name:"My Drive"}]; state.chosen=null; renderFolder(); $("sheetFolder").classList.add("open"); });
+  requireAuth(function(){
+    state.nav=[{id:ROOT_FOLDER_ID,name:ROOT_FOLDER_NAME}];
+    state.chosen=null; renderFolder(); $("sheetFolder").classList.add("open");
+  });
 }
+function atRoot(){ return state.nav.length===1; }
 function renderFolder(){
   var cur=state.nav[state.nav.length-1];
   $("crumbs").innerHTML=state.nav.map(function(n,i){
     return "<span data-i='"+i+"'>"+n.name+"</span>"+(i<state.nav.length-1?" <i>&rsaquo;</i> ":"");
   }).join("");
+  // the root itself is a container, not a job — it can never be the upload target
+  $("btnUseThis").disabled = atRoot();
+  $("btnUseThis").textContent = atRoot() ? "Open a job folder to continue" : "Use this folder";
   $("folderList").innerHTML="<div class='item'>Loading…</div>";
   driveList(cur.id).then(function(folders){
-    if(!folders.length){ $("folderList").innerHTML="<div class='item' style='color:var(--muted)'>No sub-folders here. Tap “Use this folder”.</div>"; return; }
+    if(!folders.length){
+      $("folderList").innerHTML = atRoot()
+        ? "<div class='item' style='color:var(--err)'>No job folders yet. Run the daily job-folder sync.</div>"
+        : "<div class='item' style='color:var(--muted)'>No sub-folders here. Tap “Use this folder”.</div>";
+      return;
+    }
     $("folderList").innerHTML=folders.map(function(f){
       var safe=f.name.replace(/"/g,"&quot;");
       return "<div class='item' data-id='"+f.id+"' data-name=\""+safe+"\">&#128193; <span>"+f.name+"</span><span class='use'>open &rsaquo;</span></div>";
@@ -444,7 +481,8 @@ $("crumbs").addEventListener("click",function(e){
 });
 $("btnUseThis").onclick=function(){
   var cur=state.chosen||state.nav[state.nav.length-1];
-  if(cur.id==="root"){ toast("Open a job folder first","err"); return; }
+  // belt and braces: the pinned root is a container, never a destination
+  if(!cur || cur.id===ROOT_FOLDER_ID || cur.id==="root"){ toast("Open a job folder first","err"); return; }
   state.folderId=cur.id; state.folderName=cur.name;
   localStorage.setItem(LS.folderId,cur.id); localStorage.setItem(LS.folderName,cur.name);
   refreshTarget(); $("sheetFolder").classList.remove("open"); toast("Folder set: "+cur.name,"ok");
@@ -510,6 +548,7 @@ $("zoomSlider").addEventListener("input",function(e){ applyZoom(e.target.value);
 })();
 
 /* ---------- init ---------- */
+$("rootLabel").textContent = ROOT_FOLDER_NAME;
 loadLogo(); refreshTarget(); startCamera();
 </script>
 </body>
