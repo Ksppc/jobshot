@@ -536,6 +536,10 @@ function uploadOrSave(blob){
   qAdd({
     blob:blob,
     name:(state.job||"photo")+"_"+s.date+"_"+s.time.replace(/:/g,"-")+".jpg",
+    // stamped once, at capture, and kept for the life of the queue entry. The
+    // uploader refuses a uid it has already filed, so a retry that actually
+    // succeeded the first time cannot produce a second copy.
+    uid: (Date.now().toString(36)+"-"+Math.random().toString(36).slice(2,10)),
     folderId:state.folderId, folderName:state.folderName, ts:Date.now()
   }).then(function(){
     updatePending();
@@ -562,7 +566,7 @@ function uploadOne(item){
     return fetch(SLOT_URL, {
       method:"POST",
       headers:{"Content-Type":"text/plain;charset=utf-8"},
-      body: JSON.stringify({ pin:state.pin, folderId:item.folderId, name:item.name, data:b64 })
+      body: JSON.stringify({ pin:state.pin, folderId:item.folderId, name:item.name, uid:item.uid, data:b64 })
     });
   })
   .then(function(r){ return r.json(); })
@@ -577,16 +581,21 @@ function uploadOne(item){
 var flushing=false;
 function flushQueue(opts){
   opts=opts||{};
+  // Claim the lock SYNCHRONOUSLY. Four things trigger a send — capture, reconnect,
+  // foreground, and the 30s timer. If the flag is set after an await, two of them
+  // slip through together and upload the same photo twice. That happened.
   if(flushing) return Promise.resolve();
+  flushing=true;
+  function done(){ flushing=false; }
   return qCount().then(function(n){
-    if(!n){ status(""); return; }
-    if(!navigator.onLine){ status(n+" photo"+(n>1?"s":"")+" held — no signal"); return; }
+    if(!n){ status(""); done(); return; }
+    if(!navigator.onLine){ status(n+" photo"+(n>1?"s":"")+" held — no signal"); done(); return; }
     if(!havePin()){
+      done();
       if(opts.interactive){ requirePin(function(){ flushQueue(); }); }
       else { status(n+" photo"+(n>1?"s":"")+" held — tap to enter the shop PIN"); }
       return;
     }
-    flushing=true;
     updatePending(true);
     // strict order, stop at the first failure so photos upload oldest-first and
     // a dead network doesn't burn through the whole queue retrying
@@ -605,13 +614,13 @@ function flushQueue(opts){
         });
       }, Promise.resolve(false));
     }).then(function(stopped){
-      flushing=false;
+      done();
       return updatePending(false).then(function(left){
         if(!left){ status(""); toast("All photos uploaded","ok"); }
         else if(stopped){ status(left+" photo"+(left>1?"s":"")+" still held — will retry"); }
       });
-    }).catch(function(){ flushing=false; updatePending(false); });
-  });
+    }).catch(function(){ done(); updatePending(false); });
+  }).catch(function(){ done(); });
 }
 
 /* retry triggers: reconnect, app brought back to the front, and a slow poll for
