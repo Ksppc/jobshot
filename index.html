@@ -153,9 +153,9 @@
 <div class="sheet" id="sheetSettings">
   <div class="card">
     <h2>Settings</h2>
-    <label class="f">Google OAuth Client ID</label>
-    <input type="text" id="inClientId" placeholder="1234567890-abc.apps.googleusercontent.com" autocomplete="off" />
-    <div class="hint">Already configured. Only change this if you rebuild the Google project.</div>
+    <label class="f">Shop PIN</label>
+    <button class="btn ghost" id="btnChangePin" style="margin-top:0">Change the PIN on this device</button>
+    <div class="hint">Photos are filed by the shop's own uploader. No Google account is used on this device.</div>
 
     <label class="f">Location (stamped on every photo)</label>
     <input type="text" id="inLocation" placeholder="PPC" />
@@ -168,6 +168,19 @@
     <button class="btn primary" id="btnSaveSettings">Save</button>
     <button class="btn ghost" id="btnCloseSettings">Close</button>
     <div class="hint" id="signedState"></div>
+  </div>
+</div>
+
+<!-- PIN sheet — the whole of "signing in" -->
+<div class="sheet" id="sheetPin">
+  <div class="card">
+    <h2>Shop PIN</h2>
+    <div class="hint" style="margin-bottom:12px">Enter the shop PIN once. This device will remember it — you won't be asked again.</div>
+    <input type="text" id="inPin" inputmode="numeric" autocomplete="off" placeholder="••••"
+           style="text-align:center;font-size:26px;letter-spacing:8px;font-weight:700" />
+    <div class="hint" id="pinMsg" style="min-height:18px;color:var(--accent)"></div>
+    <button class="btn blue" id="btnPinSave">Save</button>
+    <button class="btn ghost" id="btnPinCancel">Cancel</button>
   </div>
 </div>
 
@@ -185,17 +198,21 @@
 
 <div class="toast" id="toast"></div>
 
-<script src="https://accounts.google.com/gsi/client" async defer></script>
 <script>
 "use strict";
 /* ---------- config / state ---------- */
-var SCOPE = "https://www.googleapis.com/auth/drive";
 var LS = { clientId:"pjs_client_id", location:"pjs_location", logo:"pjs_logo",
   folderId:"pjs_folder_id", folderName:"pjs_folder_name", cfgVer:"pjs_cfg_version",
-  token:"pjs_token", tokenExp:"pjs_token_exp" };
+  token:"pjs_token", tokenExp:"pjs_token_exp", pin:"pjs_pin" };
+
+/* ---------- the slot ----------
+   An Apps Script web app running as Kent. The phones hold no Google account and
+   no Drive access at all — they post a photo and the slot files it. The script
+   refuses to touch anything outside the production folder, so the worst a
+   stolen PIN buys is junk photos in a job folder. */
+var SLOT_URL = "https://script.google.com/macros/s/AKfycbyNEtd1QOBS445n3Cfene2hIePUsFVnQvP2ZO07TzUOaDxnEFS1CxpEchDmY4O9eG--0g/exec";
 var DEFAULT_LOCATION = "PPC";
 var OLD_LOCATIONS = ["PPC Edmonton Shop"];  // auto-migrate any legacy default to PPC
-var DEFAULT_CLIENT_ID = "554927118785-cu08jfujbaanb6dprjsq5uqfhm59nveg.apps.googleusercontent.com";
 var JPEG_QUALITY = 1.0;
 
 /* ---------- production photo root ----------
@@ -220,16 +237,14 @@ var CONFIG_VERSION   = 2;
 })();
 
 var state = {
-  token:null, tokenClient:null,
-  clientId: localStorage.getItem(LS.clientId) || DEFAULT_CLIENT_ID,
+  pin: localStorage.getItem(LS.pin) || "",
   location: (function(v){ return (!v || OLD_LOCATIONS.indexOf(v)>=0) ? DEFAULT_LOCATION : v; })(localStorage.getItem(LS.location)),
   logo: localStorage.getItem(LS.logo) || "",
   folderId: localStorage.getItem(LS.folderId) || "",
   folderName: localStorage.getItem(LS.folderName) || "",
   job:"", stream:null, facing:"environment",
   zoom:1, zoomMode:"none", zoomTrack:null,
-  nav:[{id:ROOT_FOLDER_ID,name:ROOT_FOLDER_NAME}], chosen:null, afterAuth:null,
-  interactiveTried:false
+  nav:[{id:ROOT_FOLDER_ID,name:ROOT_FOLDER_NAME}], chosen:null, afterPin:null
 };
 var logoImg = null;
 
@@ -408,84 +423,72 @@ function captureFromFile(file){
   });
 }
 
-/* ---------- Google auth + Drive ----------
-   Sign in once, then stay signed in. Google hands out access tokens that expire
-   after about an hour and gives browser apps no refresh token, so "signed in for
-   good" means: cache the token until it expires, then renew it SILENTLY with
-   prompt:"" — which reuses the consent already on file and shows no screen. The
-   consent dialog only ever reappears if the grant is revoked in the Google
-   account, the device signs out of Google, or site data is cleared. */
-function markSignedIn(yes){
-  $("btnSignin").textContent = yes ? "Signed in" : "Sign in";
-  $("signedState").textContent = yes ? "Signed in to Google Drive." : "Not signed in yet.";
+/* ---------- the PIN ----------
+   Replaces the Google sign-in entirely. Typed once per phone and kept forever;
+   it never expires, so a new hire is set up by handing them the device and four
+   digits. The PIN is not in this file on purpose — this repo is public, so
+   anything hard-coded here is readable by anyone. */
+function havePin(){ return !!state.pin; }
+function markPin(){
+  $("btnSignin").textContent = havePin() ? "Ready" : "Enter PIN";
+  $("signedState").textContent = havePin() ? "Shop PIN saved on this device." : "No PIN on this device yet.";
 }
-function saveToken(tok, expiresIn){
-  state.token = tok;
-  // renew 2 minutes early so a long upload never dies mid-flight on an expiring token
-  var exp = Date.now() + ((+expiresIn || 3600) * 1000) - 120000;
-  try{ localStorage.setItem(LS.token, tok); localStorage.setItem(LS.tokenExp, String(exp)); }catch(e){}
-  markSignedIn(true);
+function savePin(p){
+  state.pin = p;
+  try{ localStorage.setItem(LS.pin, p); }catch(e){}
+  markPin();
 }
-function loadToken(){
-  try{
-    var t = localStorage.getItem(LS.token), e = +(localStorage.getItem(LS.tokenExp) || 0);
-    if(t && Date.now() < e){ state.token = t; return true; }
-  }catch(e){}
-  clearToken();
-  return false;
+function clearPin(){
+  state.pin = "";
+  try{ localStorage.removeItem(LS.pin); }catch(e){}
+  markPin();
 }
-function clearToken(){
-  state.token = null;
-  try{ localStorage.removeItem(LS.token); localStorage.removeItem(LS.tokenExp); }catch(e){}
-  markSignedIn(false);
+function slot(params){
+  return fetch(SLOT_URL+"?"+params).then(function(r){ return r.json(); });
 }
-function ensureTokenClient(){
-  if(!state.clientId){ toast("Add your Client ID in Settings","err"); openSettings(); return false; }
-  if(!window.google || !google.accounts){ toast("Google library still loading — try again","err"); return false; }
-  if(!state.tokenClient){
-    state.tokenClient=google.accounts.oauth2.initTokenClient({
-      client_id:state.clientId, scope:SCOPE,
-      callback:function(resp){
-        if(resp.error){
-          // a silent renewal that needs the user is not a failure — ask once, visibly
-          if(!state.interactiveTried){
-            state.interactiveTried = true;
-            state.tokenClient.requestAccessToken({prompt:"consent"});
-            return;
-          }
-          toast("Sign-in failed: "+resp.error,"err"); return;
-        }
-        state.interactiveTried = false;
-        saveToken(resp.access_token, resp.expires_in);
-        var f=state.afterAuth; state.afterAuth=null; if(f) f();
-        toast("Signed in","ok");
-      },
-      error_callback:function(){
-        if(!state.interactiveTried){
-          state.interactiveTried = true;
-          state.tokenClient.requestAccessToken({prompt:"consent"});
-        }
-      }
-    });
-  }
-  return true;
+/* check a PIN against the slot before saving it, so a typo is caught here rather
+   than silently failing on every upload afterwards */
+function checkPin(p){
+  return slot("action=ping&pin="+encodeURIComponent(p))
+    .then(function(j){ return !!(j && j.pinOk); })
+    .catch(function(){ return null; });          // null = could not reach the slot
 }
-function requireAuth(then){
-  if(state.token){ if(then) then(); return; }
-  if(loadToken()){ if(then) then(); return; }          // cached and still valid
-  if(!ensureTokenClient()) return;
-  state.afterAuth=then||null;
-  state.interactiveTried = false;
-  state.tokenClient.requestAccessToken({prompt:""});   // silent when consent already granted
+function openPin(){
+  $("inPin").value = state.pin || "";
+  $("pinMsg").textContent = "";
+  $("sheetPin").classList.add("open");
+  setTimeout(function(){ $("inPin").focus(); },150);
 }
+function requirePin(then){
+  if(havePin()){ if(then) then(); return; }
+  state.afterPin = then || null;
+  openPin();
+}
+$("btnPinSave").onclick=function(){
+  var p=$("inPin").value.trim();
+  if(!p){ $("pinMsg").textContent="Enter the shop PIN."; return; }
+  $("pinMsg").textContent="Checking…";
+  checkPin(p).then(function(ok){
+    if(ok===null){ $("pinMsg").textContent="No connection — try again in signal."; return; }
+    if(!ok){ $("pinMsg").textContent="That PIN was not accepted."; return; }
+    savePin(p);
+    $("sheetPin").classList.remove("open");
+    toast("PIN saved — you're set","ok");
+    var f=state.afterPin; state.afterPin=null; if(f) f();
+    flushQueue();
+  });
+};
+$("btnPinCancel").onclick=function(){ $("sheetPin").classList.remove("open"); };
+
 function driveList(parentId){
-  var q=encodeURIComponent("'"+parentId+"' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false");
-  var url="https://www.googleapis.com/drive/v3/files?q="+q+"&fields=files(id,name)&orderBy=name&pageSize=200";
-  return fetch(url,{headers:{Authorization:"Bearer "+state.token}}).then(function(r){
-    if(r.status===401){ clearToken(); throw new Error("auth"); }
-    if(r.status===404){ throw new Error("The production photo folder could not be found. Check that this account has access to it."); }
-    return r.json();
-  }).then(function(j){ return j.files||[]; });
+  return slot("action=list&pin="+encodeURIComponent(state.pin)+"&parentId="+encodeURIComponent(parentId))
+    .then(function(j){
+      if(!j.ok){
+        if(/PIN/i.test(j.error||"")){ clearPin(); throw new Error("auth"); }
+        throw new Error(j.error||"could not read folders");
+      }
+      return j.folders||[];
+    });
 }
 /* ---------- offline queue ----------
    The shop has dead zones, so a photo is NEVER uploaded straight from memory.
@@ -544,17 +547,29 @@ function uploadOrSave(blob){
   });
 }
 
+function blobToBase64(blob){
+  return new Promise(function(res,rej){
+    var rd=new FileReader();
+    rd.onload=function(){ res(String(rd.result).split(",")[1]); };
+    rd.onerror=rej;
+    rd.readAsDataURL(blob);
+  });
+}
 function uploadOne(item){
-  var meta={ name:item.name, parents:[item.folderId] };
-  var form=new FormData();
-  form.append("metadata", new Blob([JSON.stringify(meta)],{type:"application/json"}));
-  form.append("file", item.blob);
-  return fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name",
-    { method:"POST", headers:{Authorization:"Bearer "+state.token}, body:form })
-  .then(function(r){
-    if(r.status===401){ clearToken(); return {ok:false, reason:"auth"}; }
-    if(!r.ok) return {ok:false, reason:"http "+r.status};
-    return r.json().then(function(j){ return {ok:true, name:j.name}; });
+  return blobToBase64(item.blob).then(function(b64){
+    // text/plain keeps this a "simple" request — a preflight would fail, because
+    // Apps Script cannot answer OPTIONS
+    return fetch(SLOT_URL, {
+      method:"POST",
+      headers:{"Content-Type":"text/plain;charset=utf-8"},
+      body: JSON.stringify({ pin:state.pin, folderId:item.folderId, name:item.name, data:b64 })
+    });
+  })
+  .then(function(r){ return r.json(); })
+  .then(function(j){
+    if(j && j.ok) return {ok:true, name:j.name};
+    if(j && /PIN/i.test(j.error||"")){ clearPin(); return {ok:false, reason:"auth"}; }
+    return {ok:false, reason:(j && j.error) || "rejected"};
   })
   .catch(function(){ return {ok:false, reason:"offline"}; });   // network died mid-send
 }
@@ -566,9 +581,9 @@ function flushQueue(opts){
   return qCount().then(function(n){
     if(!n){ status(""); return; }
     if(!navigator.onLine){ status(n+" photo"+(n>1?"s":"")+" held — no signal"); return; }
-    if(!state.token && !loadToken()){
-      if(opts.interactive){ requireAuth(function(){ flushQueue(); }); }
-      else { status(n+" photo"+(n>1?"s":"")+" held — tap to sign in and send"); }
+    if(!havePin()){
+      if(opts.interactive){ requirePin(function(){ flushQueue(); }); }
+      else { status(n+" photo"+(n>1?"s":"")+" held — tap to enter the shop PIN"); }
       return;
     }
     flushing=true;
@@ -611,7 +626,7 @@ $("pillQueue").onclick=function(){ flushQueue({interactive:true}); };
    nav[0] is always the pinned production root, so the crew can never browse above
    it — there is no breadcrumb back to My Drive because My Drive is never entered. */
 function openFolder(){
-  requireAuth(function(){
+  requirePin(function(){
     state.nav=[{id:ROOT_FOLDER_ID,name:ROOT_FOLDER_NAME}];
     state.chosen=null; renderFolder(); $("sheetFolder").classList.add("open");
   });
@@ -638,7 +653,7 @@ function renderFolder(){
       return "<div class='item' data-id='"+f.id+"' data-name=\""+safe+"\">&#128193; <span>"+f.name+"</span><span class='use'>open &rsaquo;</span></div>";
     }).join("");
   }).catch(function(e){
-    if(e.message==="auth"){ toast("Session expired — sign in again","err"); requireAuth(renderFolder); return; }
+    if(e.message==="auth"){ toast("PIN not accepted — enter it again","err"); requirePin(renderFolder); return; }
     $("folderList").innerHTML="<div class='item' style='color:var(--err)'>Error: "+e.message+"</div>";
   });
 }
@@ -665,12 +680,12 @@ $("btnPickFolder").onclick=openFolder;
 
 /* ---------- settings UI ---------- */
 function openSettings(){
-  $("inClientId").value=state.clientId;
   $("inLocation").value=state.location;
   if(state.logo){ $("logoPrev").src=state.logo; $("logoPrev").style.display="block"; }
-  $("signedState").textContent=state.token?"Signed in to Google Drive.":"Not signed in yet.";
+  markPin();
   $("sheetSettings").classList.add("open");
 }
+$("btnChangePin").onclick=function(){ $("sheetSettings").classList.remove("open"); openPin(); };
 $("btnSettings").onclick=openSettings;
 $("btnCloseSettings").onclick=function(){ $("sheetSettings").classList.remove("open"); };
 $("btnLogo").onclick=function(){ $("logoInput").click(); };
@@ -681,21 +696,16 @@ $("logoInput").onchange=function(e){
   rd.readAsDataURL(f);
 };
 $("btnSaveSettings").onclick=function(){
-  var newClientId=$("inClientId").value.trim()||DEFAULT_CLIENT_ID;
-  // a different Google project invalidates the cached token — drop it, don't strand the app on a dead one
-  if(newClientId!==state.clientId) clearToken();
-  state.clientId=newClientId;
   state.location=$("inLocation").value.trim()||DEFAULT_LOCATION;
-  localStorage.setItem(LS.clientId,state.clientId);
   localStorage.setItem(LS.location,state.location);
   if(state.logo) localStorage.setItem(LS.logo,state.logo);
-  state.tokenClient=null; loadLogo(); refreshTarget();
+  loadLogo(); refreshTarget();
   $("sheetSettings").classList.remove("open"); toast("Settings saved","ok");
 };
 function loadLogo(){ if(state.logo){ var i=new Image(); i.onload=function(){ logoImg=i; }; i.src=state.logo; } else logoImg=null; }
 
 /* ---------- wire up ---------- */
-$("btnSignin").onclick=function(){ requireAuth(function(){ flushQueue(); }); };
+$("btnSignin").onclick=function(){ openPin(); };
 $("btnShutter").onclick=capture;
 $("btnFlip").onclick=function(){ state.facing=state.facing==="environment"?"user":"environment"; startCamera(); };
 $("btnFile").onclick=function(){ $("fileInput").click(); };
@@ -725,9 +735,7 @@ $("zoomSlider").addEventListener("input",function(e){ applyZoom(e.target.value);
 
 /* ---------- init ---------- */
 $("rootLabel").textContent = ROOT_FOLDER_NAME;
-loadLogo(); refreshTarget(); startCamera();
-// restore a still-valid session so the crew opens the app already signed in
-if(loadToken()) markSignedIn(true);
+loadLogo(); refreshTarget(); startCamera(); markPin();
 // ask the browser not to evict the queue under storage pressure — without this a
 // phone low on space can silently bin photos that have not uploaded yet
 if(navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(function(){});
