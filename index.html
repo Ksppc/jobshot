@@ -42,6 +42,11 @@
     color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:58vw;letter-spacing:.2px}
   .target .pill b{color:var(--txt);font-weight:700}
   .target .change{margin-left:auto;color:var(--accent2);font-weight:700;background:none;border:0;letter-spacing:.3px}
+  /* photos held on the device — amber so it reads as "attention", not "error" */
+  .target .queue{background:rgba(246,161,92,.14);border-color:rgba(246,161,92,.5);color:var(--accent);font-weight:700}
+  .target .queue b{color:var(--accent)}
+  .target .queue.sending{background:rgba(47,184,166,.14);border-color:rgba(47,184,166,.5);color:var(--accent2)}
+  .target .queue.sending b{color:var(--accent2)}
   .stage{position:relative;flex:1;background:#000;overflow:hidden;display:flex;align-items:center;justify-content:center}
   video,canvas.preview{width:100%;height:100%;object-fit:cover;display:block}
   .hud{position:absolute;left:0;right:0;bottom:0;padding:10px 14px;
@@ -115,6 +120,7 @@
   <div class="target">
     <div class="pill" id="pillJob">Job#: <b>&mdash;</b></div>
     <div class="pill" id="pillLoc">Loc: <b>&mdash;</b></div>
+    <button class="pill queue" id="pillQueue" style="display:none"></button>
     <button class="change" id="btnPickFolder">Change</button>
   </div>
 
@@ -481,26 +487,125 @@ function driveList(parentId){
     return r.json();
   }).then(function(j){ return j.files||[]; });
 }
-function uploadOrSave(blob){
-  if(!state.folderId){ toast("Pick a job folder first","err"); openFolder(); return; }
-  requireAuth(function(){
-    status("Uploading to "+state.folderName+"…");
-    var s=stamp();
-    var name=(state.job||"photo")+"_"+s.date+"_"+s.time.replace(/:/g,"-")+".jpg";
-    var meta={ name:name, parents:[state.folderId] };
-    var form=new FormData();
-    form.append("metadata", new Blob([JSON.stringify(meta)],{type:"application/json"}));
-    form.append("file", blob);
-    fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name",
-      { method:"POST", headers:{Authorization:"Bearer "+state.token}, body:form })
-    .then(function(r){
-      if(r.status===401){ clearToken(); uploadOrSave(blob); return null; }
-      if(!r.ok){ throw new Error("HTTP "+r.status); }
-      return r.json();
-    }).then(function(j){ if(j){ status(""); toast("Saved: "+j.name,"ok"); } })
-    .catch(function(e){ status(""); toast("Upload failed: "+e.message,"err"); });
+/* ---------- offline queue ----------
+   The shop has dead zones, so a photo is NEVER uploaded straight from memory.
+   Every capture is written to IndexedDB first and only deleted once Drive has
+   confirmed it. Lose signal, close the app, kill the battery, let the token
+   expire — the photo is still on the device and goes up on the next chance. */
+var DB_NAME="cove", DB_STORE="queue", dbPromise=null;
+function db(){
+  if(dbPromise) return dbPromise;
+  dbPromise=new Promise(function(res,rej){
+    var r=indexedDB.open(DB_NAME,1);
+    r.onupgradeneeded=function(){
+      if(!r.result.objectStoreNames.contains(DB_STORE))
+        r.result.createObjectStore(DB_STORE,{keyPath:"id",autoIncrement:true});
+    };
+    r.onsuccess=function(){ res(r.result); };
+    r.onerror=function(){ rej(r.error); };
+  });
+  return dbPromise;
+}
+function store(mode){ return db().then(function(d){ return d.transaction(DB_STORE,mode).objectStore(DB_STORE); }); }
+function req(r){ return new Promise(function(res,rej){ r.onsuccess=function(){res(r.result);}; r.onerror=function(){rej(r.error);}; }); }
+function qAdd(rec){ return store("readwrite").then(function(s){ return req(s.add(rec)); }); }
+function qKeys(){ return store("readonly").then(function(s){ return req(s.getAllKeys()); }); }
+function qGet(id){ return store("readonly").then(function(s){ return req(s.get(id)); }); }
+function qDel(id){ return store("readwrite").then(function(s){ return req(s.delete(id)); }); }
+function qCount(){ return store("readonly").then(function(s){ return req(s.count()); }).catch(function(){ return 0; }); }
+
+function updatePending(sending){
+  return qCount().then(function(n){
+    var el=$("pillQueue");
+    if(n>0){
+      el.style.display="";
+      el.className="pill queue"+(sending?" sending":"");
+      el.innerHTML=(sending?"Sending ":"&#8593; ")+"<b>"+n+"</b>"+(sending?"":" held");
+    } else { el.style.display="none"; }
+    return n;
   });
 }
+
+/* every capture lands here — queue first, send second */
+function uploadOrSave(blob){
+  if(!state.folderId){ toast("Pick a job folder first","err"); openFolder(); return; }
+  var s=stamp();
+  qAdd({
+    blob:blob,
+    name:(state.job||"photo")+"_"+s.date+"_"+s.time.replace(/:/g,"-")+".jpg",
+    folderId:state.folderId, folderName:state.folderName, ts:Date.now()
+  }).then(function(){
+    updatePending();
+    flushQueue();
+  }).catch(function(e){
+    // the only truly bad outcome: the photo exists nowhere. Say so loudly.
+    toast("COULD NOT SAVE PHOTO — "+(e&&e.name||"storage error"),"err");
+    status("Photo not saved. Free up space on the device and retake it.");
+  });
+}
+
+function uploadOne(item){
+  var meta={ name:item.name, parents:[item.folderId] };
+  var form=new FormData();
+  form.append("metadata", new Blob([JSON.stringify(meta)],{type:"application/json"}));
+  form.append("file", item.blob);
+  return fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name",
+    { method:"POST", headers:{Authorization:"Bearer "+state.token}, body:form })
+  .then(function(r){
+    if(r.status===401){ clearToken(); return {ok:false, reason:"auth"}; }
+    if(!r.ok) return {ok:false, reason:"http "+r.status};
+    return r.json().then(function(j){ return {ok:true, name:j.name}; });
+  })
+  .catch(function(){ return {ok:false, reason:"offline"}; });   // network died mid-send
+}
+
+var flushing=false;
+function flushQueue(opts){
+  opts=opts||{};
+  if(flushing) return Promise.resolve();
+  return qCount().then(function(n){
+    if(!n){ status(""); return; }
+    if(!navigator.onLine){ status(n+" photo"+(n>1?"s":"")+" held — no signal"); return; }
+    if(!state.token && !loadToken()){
+      if(opts.interactive){ requireAuth(function(){ flushQueue(); }); }
+      else { status(n+" photo"+(n>1?"s":"")+" held — tap to sign in and send"); }
+      return;
+    }
+    flushing=true;
+    updatePending(true);
+    // strict order, stop at the first failure so photos upload oldest-first and
+    // a dead network doesn't burn through the whole queue retrying
+    return qKeys().then(function(keys){
+      return keys.reduce(function(chain,id){
+        return chain.then(function(stop){
+          if(stop) return true;
+          return qGet(id).then(function(item){
+            if(!item) return false;
+            status("Sending "+item.name+"…");
+            return uploadOne(item).then(function(r){
+              if(r.ok){ return qDel(id).then(function(){ updatePending(true); return false; }); }
+              return true;
+            });
+          });
+        });
+      }, Promise.resolve(false));
+    }).then(function(stopped){
+      flushing=false;
+      return updatePending(false).then(function(left){
+        if(!left){ status(""); toast("All photos uploaded","ok"); }
+        else if(stopped){ status(left+" photo"+(left>1?"s":"")+" still held — will retry"); }
+      });
+    }).catch(function(){ flushing=false; updatePending(false); });
+  });
+}
+
+/* retry triggers: reconnect, app brought back to the front, and a slow poll for
+   the case where the phone reports "online" but the yard has no real bandwidth */
+window.addEventListener("online", function(){ toast("Back online","ok"); flushQueue(); });
+window.addEventListener("offline", function(){ updatePending(false); status("No signal — photos are held on this device"); });
+document.addEventListener("visibilitychange", function(){ if(!document.hidden) flushQueue(); });
+setInterval(function(){ flushQueue(); }, 30000);
+$("pillQueue").onclick=function(){ flushQueue({interactive:true}); };
 
 /* ---------- folder picker UI ----------
    nav[0] is always the pinned production root, so the crew can never browse above
@@ -590,7 +695,7 @@ $("btnSaveSettings").onclick=function(){
 function loadLogo(){ if(state.logo){ var i=new Image(); i.onload=function(){ logoImg=i; }; i.src=state.logo; } else logoImg=null; }
 
 /* ---------- wire up ---------- */
-$("btnSignin").onclick=function(){ requireAuth(function(){}); };
+$("btnSignin").onclick=function(){ requireAuth(function(){ flushQueue(); }); };
 $("btnShutter").onclick=capture;
 $("btnFlip").onclick=function(){ state.facing=state.facing==="environment"?"user":"environment"; startCamera(); };
 $("btnFile").onclick=function(){ $("fileInput").click(); };
@@ -623,6 +728,11 @@ $("rootLabel").textContent = ROOT_FOLDER_NAME;
 loadLogo(); refreshTarget(); startCamera();
 // restore a still-valid session so the crew opens the app already signed in
 if(loadToken()) markSignedIn(true);
+// ask the browser not to evict the queue under storage pressure — without this a
+// phone low on space can silently bin photos that have not uploaded yet
+if(navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(function(){});
+// anything left over from last time goes up as soon as we can
+updatePending(false).then(function(n){ if(n) flushQueue(); });
 </script>
 </body>
 </html>
